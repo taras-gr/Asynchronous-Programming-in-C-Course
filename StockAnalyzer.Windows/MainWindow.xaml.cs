@@ -1,8 +1,11 @@
 ﻿using Newtonsoft.Json;
 using StockAnalyzer.Core;
 using StockAnalyzer.Core.Domain;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -16,21 +19,106 @@ public partial class MainWindow : Window
 {
     private static string API_URL = "https://ps-async.fekberg.com/api/stocks";
     private Stopwatch stopwatch = new Stopwatch();
+    private CancellationTokenSource? CancellationTokenSource;
+    private CancellationToken cancellationToken;
 
     public MainWindow()
     {
+        //cancellationToken = CancellationTokenSource.Token;
         InitializeComponent();
     }
 
-
-
-    private async void Search_Click(object sender, RoutedEventArgs e)
+    private void Cancel_Click(object sender, RoutedEventArgs e)
     {
-        BeforeLoadingStockData();
+        //CancellationTokenSource = new CancellationTokenSource();
+        if (CancellationTokenSource is not null)
+        {
+            CancellationTokenSource.Cancel();
+            CancellationTokenSource.Dispose();
+        }
+    }
 
-        await GetStocks();
+    private void Search_Click(object sender, RoutedEventArgs e)
+    {
+        CancellationTokenSource = new CancellationTokenSource();
+        try
+        {
+            BeforeLoadingStockData();
 
-        AfterLoadingStockData();
+            CancellationTokenSource.Token.Register(() => Notes.Text = "Z delegate");
+
+            var loadLinesTask = SearchForStocks(CancellationTokenSource.Token);
+
+            loadLinesTask.ContinueWith(t =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    Notes.Text = t.Exception?.InnerException.Message ?? "Lines loaded successfully.";
+                });
+            }, TaskContinuationOptions.OnlyOnFaulted);
+
+            var processStocksTask = loadLinesTask.ContinueWith((completedTask) =>
+            {
+                var lines = completedTask.Result;
+
+                var data = new List<StockPrice>();
+
+                foreach (var line in lines.Skip(1))
+                {
+                    var price = StockPrice.FromCSV(line);
+
+                    data.Add(price);
+                }
+
+                Dispatcher.Invoke(() =>
+                {
+                    Stocks.ItemsSource = data.Where(sp => sp.Identifier == StockIdentifier.Text);
+                });
+            },
+            TaskContinuationOptions.OnlyOnRanToCompletion
+            );
+
+            processStocksTask.ContinueWith(_ =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    AfterLoadingStockData();
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            Notes.Text = ex.Message;
+        }
+        finally
+        {
+            //AfterLoadingStockData();
+        }
+    }
+
+    private Task<List<string>> SearchForStocks(CancellationToken cancellationToken)
+    {
+        return Task.Run(async () =>
+        {
+            Thread.Sleep(5000); // Simulate some delay for loading data
+            using var stream = new StreamReader(File.OpenRead("StockPrices_Small.csv"));
+            var lines = new List<string>();
+
+            while (await stream.ReadLineAsync() is string line)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        Notes.Text = "Cancelled!";
+                    });
+                    break;
+                }
+                lines.Add(line);
+            }
+
+            return lines;
+        }, cancellationToken);
     }
 
     private async Task GetStocks()
