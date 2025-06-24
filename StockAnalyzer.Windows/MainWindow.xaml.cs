@@ -2,9 +2,11 @@
 using StockAnalyzer.Core;
 using StockAnalyzer.Core.Domain;
 using StockAnalyzer.Core.Services;
+using StockAnalyzer.Windows.Services;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -30,20 +32,61 @@ public partial class MainWindow : Window
 
     CancellationTokenSource? cancellationTokenSource;
 
+    private async void Search_ClickDumb(object sender, RoutedEventArgs e)
+    {
+        Notes.Text = "";
+    }
+
+    private async Task Run()
+    {
+        var result = await Task.Run(() => "Plualsight");
+
+        if (result == "Pluralsight")
+        {
+            Debug.WriteLine(result);
+        }
+    }
+
     private async void Search_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            var data = await GetStocksFor(StockIdentifier.Text);
+            BeforeLoadingStockData();
 
-            Notes.Text = $"Stocks loaded";
+            var identifiers = StockIdentifier.Text.Split(',', ' ');
 
+            var data = new ObservableCollection<StockPrice>();
 
             Stocks.ItemsSource = data;
+
+            var service = new StockDiskStreamService();
+
+            var enumerator = service.GetAllStockPrices();
+
+            await foreach (var price in enumerator.WithCancellation(CancellationToken.None))
+            {
+                if (identifiers.Contains(price.Identifier))
+                {
+                    price.Identifier = Thread.CurrentThread.ManagedThreadId.ToString() + " - " + price.Identifier;
+                    data.Add(price);
+                    Console.WriteLine(Thread.CurrentThread.ManagedThreadId);
+                }
+            }
+
+            //var data = await GetStocksFor(StockIdentifier.Text);
+
+            //Notes.Text = $"Stocks loaded";
+
+
+            //Stocks.ItemsSource = data;
         }
         catch (Exception ex)
         {
             Notes.Text = ex.Message;
+        }
+        finally
+        {
+            AfterLoadingStockData();
         }
         //if (cancellationTokenSource is not null)
         //{
