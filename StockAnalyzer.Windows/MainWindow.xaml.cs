@@ -4,6 +4,7 @@ using StockAnalyzer.Core.Domain;
 using StockAnalyzer.Core.Services;
 using StockAnalyzer.Windows.Services;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -52,33 +53,20 @@ public partial class MainWindow : Window
         try
         {
             BeforeLoadingStockData();
+            //var progress = new Progress<IEnumerable<StockPrice>>();
+            //progress.ProgressChanged += (_, stocks) =>
+            //{
+            //    StockProgress.Value += 1;
+            //    Notes.Text += $"Loaded {stocks.Count()} stocks for {stocks.First().Identifier}{Environment.NewLine}";
+            //};
 
-            var identifiers = StockIdentifier.Text.Split(',', ' ');
-
-            var data = new ObservableCollection<StockPrice>();
-
-            Stocks.ItemsSource = data;
-
-            var service = new StockDiskStreamService();
-
-            var enumerator = service.GetAllStockPrices();
-
-            await foreach (var price in enumerator.WithCancellation(CancellationToken.None))
-            {
-                if (identifiers.Contains(price.Identifier))
-                {
-                    price.Identifier = Thread.CurrentThread.ManagedThreadId.ToString() + " - " + price.Identifier;
-                    data.Add(price);
-                    Console.WriteLine(Thread.CurrentThread.ManagedThreadId);
-                }
-            }
-
+            var data = await GetStockPrices();
             //var data = await GetStocksFor(StockIdentifier.Text);
 
-            //Notes.Text = $"Stocks loaded";
+            Notes.Text = $"Stocks loaded";
 
 
-            //Stocks.ItemsSource = data;
+            Stocks.ItemsSource = data;
         }
         catch (Exception ex)
         {
@@ -169,6 +157,55 @@ public partial class MainWindow : Window
         //}
     }
 
+    private Task<IEnumerable<StockPrice>> GetStockPrices()
+    {
+        var tcs = new TaskCompletionSource<IEnumerable<StockPrice>>();
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var lines = File.ReadAllLines("StockPrices_Small.csv");
+            var prices = new List<StockPrice>();
+
+            foreach (var line in lines.Skip(1)) // Skip header
+            {
+                var price = StockPrice.FromCSV(line);
+                prices.Add(price);
+            }
+
+            tcs.SetResult(prices);
+        });
+
+        return tcs.Task;
+    }
+
+    private async Task SearchForStocks()
+    {
+        var service = new StockService();
+        var loadingTasks = new List<Task<IEnumerable<StockPrice>>>();
+
+        foreach (var identifier in StockIdentifier.Text.Split(',', ' '))
+        {
+            var loadTask = service.GetStockPricesFor(identifier,
+                CancellationToken.None);
+
+            loadTask = loadTask.ContinueWith(t =>
+            {
+                //progress?.Report(t.Result);
+                Dispatcher.Invoke(() =>
+                {
+                    StockProgress.Value += 1;
+                    Notes.Text += $"Loaded {t.Result.Count()} stocks for {t.Result.First().Identifier}{Environment.NewLine}";
+                });
+                
+                return t.Result;
+            });
+
+            loadingTasks.Add(loadTask);
+        }
+
+        var data = await Task.WhenAll(loadingTasks);
+    }
+
     private async Task<IEnumerable<StockPrice>> GetStocksFor(string stockIdentifier)
     {
         var service = new StockService();
@@ -234,7 +271,9 @@ public partial class MainWindow : Window
     {
         stopwatch.Restart();
         StockProgress.Visibility = Visibility.Visible;
-        StockProgress.IsIndeterminate = true;
+        StockProgress.IsIndeterminate = false;
+        StockProgress.Value = 0;
+        StockProgress.Maximum = StockIdentifier.Text.Split(',', ' ').Length;
     }
 
     private void AfterLoadingStockData()
